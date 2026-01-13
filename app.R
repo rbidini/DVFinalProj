@@ -1,148 +1,212 @@
+# app.R
+# UAE Car Listings Dashboard (clean + sleek + USD conversion)
+# Put this file in the same folder as: dubizzle_cars_dataset.csv
+
 library(shiny)
-library(readr)
-library(plotly)
 library(dplyr)
+library(plotly)
 library(DT)
 library(shinydashboard)
+library(scales)
+
+# -----------------------------
+# Load + Clean Data
+# -----------------------------
+
+# Friendly error if the dataset isn't present
+if (!file.exists("dubizzle_cars_dataset.csv")) {
+  stop("Missing file: dubizzle_cars_dataset.csv. Put it in the same folder as app.R.")
+}
 
 dubizzle_cars_dataset <- read.csv("dubizzle_cars_dataset.csv", stringsAsFactors = FALSE)
 
-#Changed the currency from AED to USD
-aed_to_usd <- 0.27
+# Helper: safely coerce to numeric (handles commas, currency symbols, etc.)
+to_num <- function(x) {
+  suppressWarnings(as.numeric(gsub("[^0-9.]", "", as.character(x))))
+}
 
+# Conversion constants (document these in README)
+aed_to_usd  <- 0.27
+km_to_miles <- 0.621371
+
+cars <- dubizzle_cars_dataset %>%
+  mutate(
+    price = to_num(price),
+    kilometers = to_num(kilometers),
+    miles = kilometers * km_to_miles,
+    year = to_num(year),
+    engine_capacity_cc = if ("engine_capacity_cc" %in% names(.)) to_num(engine_capacity_cc) else NA_real_,
+    horsepower = if ("horsepower" %in% names(.)) to_num(horsepower) else NA_real_,
+    price_usd = price * aed_to_usd
+  ) %>%
+  filter(!is.na(price_usd), price_usd > 0) %>%
+  mutate(
+    vehicle_age_years = as.numeric(format(Sys.Date(), "%Y")) - year,
+    price_per_km   = ifelse(!is.na(kilometers) & kilometers > 0, price_usd / kilometers, NA_real_),
+    price_per_mile = ifelse(!is.na(miles) & miles > 0, price_usd / miles, NA_real_)
+  )
+
+# Precompute choices
+brand_choices <- sort(unique(na.omit(cars$brand)))
+model_choices <- sort(unique(na.omit(cars$model)))
+fuel_choices  <- sort(unique(na.omit(cars$fuel_type)))
+year_choices  <- sort(unique(na.omit(cars$year)), decreasing = TRUE)
+
+# -----------------------------
+# UI
+# -----------------------------
 ui <- dashboardPage(
+  skin = "blue",
   dashboardHeader(
-    title = tags$div(
-      tags$span("United Arab Emirates Cars Data Analysis", style = "color: #FFFFFF;")
-    )
+    title = tags$span("UAE Used Cars — Interactive Pricing Dashboard", style = "font-weight: 600;")
   ),
- #Adding icons for the side bar to make it more appealing
-   dashboardSidebar(
+  dashboardSidebar(
     sidebarMenu(
-      menuItem("Price Distribution", tabName = "price_distribution", icon = icon("chart-bar")),
-      menuItem("Comparative Analysis", tabName = "comparative_analysis", icon = icon("chart-line")),
-      menuItem("Dataset Table", tabName = "dataset_table", icon = icon("table")),
-      menuItem("About the Data", tabName = "about_data", icon = icon("info-circle"))
+      menuItem("Overview", tabName = "overview", icon = icon("gauge-high")),
+      menuItem("Price Distribution", tabName = "price_distribution", icon = icon("chart-column")),
+      menuItem("Brand Comparison", tabName = "brand_comparison", icon = icon("chart-bar")),
+      menuItem("Explore Listings", tabName = "dataset_table", icon = icon("table")),
+      menuItem("About", tabName = "about_data", icon = icon("circle-info"))
+    ),
+    hr(),
+    tags$div(style = "padding: 0 10px;",
+             selectInput("brand", "Brand",
+                         choices = c("All" = "All", brand_choices),
+                         selected = "All",
+                         multiple = TRUE
+             ),
+             selectInput("model", "Model",
+                         choices = c("All" = "All", model_choices),
+                         selected = "All",
+                         multiple = TRUE
+             ),
+             selectInput("year", "Year",
+                         choices = c("All" = "All", year_choices),
+                         selected = "All",
+                         multiple = TRUE
+             ),
+             selectInput("fuel_type", "Fuel Type",
+                         choices = c("All" = "All", fuel_choices),
+                         selected = "All",
+                         multiple = TRUE
+             ),
+             sliderInput("price_range", "Price Range (USD)",
+                         min = floor(min(cars$price_usd, na.rm = TRUE)),
+                         max = ceiling(max(cars$price_usd, na.rm = TRUE)),
+                         value = c(
+                           floor(quantile(cars$price_usd, 0.01, na.rm = TRUE)),
+                           ceiling(quantile(cars$price_usd, 0.99, na.rm = TRUE))
+                         ),
+                         step = 100,
+                         pre = "$"
+             ),
+             checkboxInput("remove_outliers", "Trim extreme outliers (recommended)", value = TRUE),
+             checkboxInput("us_view", "US-friendly table view (USD + miles, key columns only)", value = TRUE),
+             checkboxInput("log_scale", "Use log scale for price charts", value = FALSE),
+             hr(),
+             radioButtons(
+               inputId = "distance_unit",
+               label = "Distance Unit",
+               choices = c("Miles (US)" = "mi", "Kilometers" = "km"),
+               selected = "mi",
+               inline = TRUE
+             ),
+             downloadButton("download_filtered", "Download Filtered CSV")
     )
   ),
   dashboardBody(
     tags$head(
-    #making it a little more fancy and adding different color :)  
       tags$style(HTML("
-        .skin-blue .main-header .logo {
-          background-color: #007B3A;
-          color: #FFFFFF;
-          border-bottom: 0 solid transparent;
-        }
-        .skin-blue .main-header .navbar {
-          background-color: #007B3A;
-        }
-        .skin-blue .main-sidebar {
-          background-color: #000000;
-        }
-        .skin-blue .main-sidebar .sidebar .sidebar-menu .active a {
-          background-color: #007B3A;
-          color: #FFFFFF;
-        }
-        .skin-blue .main-sidebar .sidebar .sidebar-menu a {
-          color: #FFFFFF;
-        }
-        .skin-blue .main-sidebar .sidebar .sidebar-menu a:hover {
-          background-color: #007B3A;
-          color: #FFFFFF;
-        }
-        .skin-blue .main-header .navbar .sidebar-toggle {
-          color: #FFFFFF;
-          border-right: 1px solid #FFFFFF;
-        }
-        .box.box-solid.box-primary>.box-header {
-          background-color: #007B3A;
-          color: #FFFFFF;
-        }
-        .box.box-solid.box-primary {
-          border-color: #007B3A;
-        }
+        .content-wrapper, .right-side { background-color: #F5F7FB; }
+        .box { border-radius: 14px; border-top: 0; box-shadow: 0 6px 18px rgba(17, 24, 39, 0.08); }
+        .box-header { padding: 14px 16px; border-bottom: 1px solid rgba(17, 24, 39, 0.06); }
+        .box-title { font-weight: 700; }
+        .skin-blue .main-header .logo { background-color: #111827; font-weight: 700; }
+        .skin-blue .main-header .navbar { background-color: #111827; }
+        .skin-blue .main-sidebar { background-color: #0B1220; }
+        .skin-blue .main-sidebar .sidebar .sidebar-menu a { color: #E5E7EB; }
+        .skin-blue .main-sidebar .sidebar .sidebar-menu a:hover { background-color: #111827; }
+        .skin-blue .main-sidebar .sidebar .sidebar-menu .active a { background-color: #1F2937; }
+        .value-box { border-radius: 14px; box-shadow: 0 6px 18px rgba(17, 24, 39, 0.08); }
+        .small-box { border-radius: 14px; }
+        .small-box p { font-size: 13px; opacity: 0.9; }
       "))
     ),
     tabItems(
+      tabItem(tabName = "overview",
+              fluidRow(
+                valueBoxOutput("kpi_count"),
+                valueBoxOutput("kpi_median_price"),
+                valueBoxOutput("kpi_avg_distance"),
+                valueBoxOutput("kpi_avg_age")
+              ),
+              fluidRow(
+                box(
+                  title = "Price vs. Vehicle Age (USD)",
+                  width = 12,
+                  plotlyOutput("scatter_age_price", height = "420px")
+                )
+              )
+      ),
+      
       tabItem(tabName = "price_distribution",
               fluidRow(
                 box(
-                  title = "Filter Options",
-                  selectInput("brand", "Select Car Brand:",
-                              choices = c("All Brands" = "All", unique(dubizzle_cars_dataset$brand)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("model", "Select Car Model:",
-                              choices = c("All Models" = "All", unique(dubizzle_cars_dataset$model)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("year", "Select Year:",
-                              choices = c("All Years" = "All", sort(unique(dubizzle_cars_dataset$year), decreasing = TRUE)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("fuel_type", "Select Fuel Type:",
-                              choices = c("All Fuels" = "All", unique(dubizzle_cars_dataset$fuel_type)),
-                              selected = "All",
-                              multiple = TRUE)
+                  title = "Price Distribution (USD)",
+                  width = 12,
+                  plotlyOutput("price_distribution_plot", height = "420px")
                 )
               ),
               fluidRow(
                 box(
-                  title = "Price Distribution",
-                  plotlyOutput("price_distribution_plot"),
-                  width = 12
+                  title = "Price per Distance (USD per mile/km)",
+                  width = 12,
+                  plotlyOutput("ppk_plot", height = "420px")
                 )
               )
       ),
-      # allow user to choose different options
-      tabItem(tabName = "comparative_analysis",
+      
+      tabItem(tabName = "brand_comparison",
               fluidRow(
                 box(
-                  title = "Filter Options",
-                  selectInput("brand", "Select Car Brand:",
-                              choices = c("All Brands" = "All", unique(dubizzle_cars_dataset$brand)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("model", "Select Car Model:",
-                              choices = c("All Models" = "All", unique(dubizzle_cars_dataset$model)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("year", "Select Year:",
-                              choices = c("All Years" = "All", sort(unique(dubizzle_cars_dataset$year), decreasing = TRUE)),
-                              selected = "All",
-                              multiple = TRUE),
-                  selectInput("fuel_type", "Select Fuel Type:",
-                              choices = c("All Fuels" = "All", unique(dubizzle_cars_dataset$fuel_type)),
-                              selected = "All",
-                              multiple = TRUE)
+                  title = "Average Price by Brand (USD)",
+                  width = 12,
+                  plotlyOutput("comparative_plot", height = "420px")
                 )
               ),
               fluidRow(
                 box(
-                  title = "Comparative Analysis",
-                  plotlyOutput("comparative_plot"),
-                  width = 12  
+                  title = "Top Brands by Listing Count",
+                  width = 12,
+                  plotlyOutput("top_brands_plot", height = "420px")
                 )
               )
       ),
+      
       tabItem(tabName = "dataset_table",
               fluidRow(
                 box(
-                  title = "Dataset Table",
-                  DTOutput("data_table"),
-                  width = 12
+                  title = "Filtered Listings",
+                  width = 12,
+                  DTOutput("data_table")
                 )
               )
       ),
+      
       tabItem(tabName = "about_data",
               fluidRow(
                 box(
                   title = "About the Data",
+                  width = 12,
                   h3("Dataset Overview"),
-                  p("This dataset contains features about different kinds of cars in the United Arab Emirates. It includes data on about 10,000 different cars from the UAE."),
-                  
-                  h4("Important Columns"),
+                  p("This dashboard explores used car listings in the United Arab Emirates."),
+                  tags$ul(
+                    tags$li("Prices are normalized from AED to USD."),
+                    tags$li("Distance can be viewed in miles or kilometers."),
+                    tags$li("Optional outlier trimming improves chart readability."),
+                    tags$li("All visualizations update dynamically based on filters.")
+                  ),
+                  h4("Key Columns (High-Level)"),
                   tableOutput("data_summary")
                 )
               )
@@ -151,87 +215,312 @@ ui <- dashboardPage(
   )
 )
 
-  # Filtered data based on user inputs from the server function below
+# -----------------------------
+# Server
+# -----------------------------
 server <- function(input, output, session) {
+  
+  # Distance unit helpers
+  distance_col <- reactive({
+    if (!is.null(input$distance_unit) && input$distance_unit == "mi") "miles" else "kilometers"
+  })
+  
+  distance_label <- reactive({
+    if (!is.null(input$distance_unit) && input$distance_unit == "mi") "Miles (mi)" else "Kilometers (km)"
+  })
+  
+  # Keep model choices in sync with chosen brand(s)
+  observeEvent(input$brand, {
+    if (is.null(input$brand) || "All" %in% input$brand) {
+      updateSelectInput(session, "model",
+                        choices = c("All" = "All", model_choices),
+                        selected = isolate(input$model)
+      )
+    } else {
+      possible_models <- cars %>%
+        filter(brand %in% input$brand) %>%
+        pull(model) %>%
+        unique() %>%
+        na.omit() %>%
+        sort()
+      updateSelectInput(session, "model", choices = c("All" = "All", possible_models), selected = "All")
+    }
+  }, ignoreInit = TRUE)
+  
   filtered_data <- reactive({
-    filtered <- dubizzle_cars_dataset
+    filtered <- cars
     
     if (!is.null(input$brand) && !("All" %in% input$brand)) {
       filtered <- filtered %>% filter(brand %in% input$brand)
     }
-    
     if (!is.null(input$model) && !("All" %in% input$model)) {
       filtered <- filtered %>% filter(model %in% input$model)
     }
-    
     if (!is.null(input$year) && !("All" %in% input$year)) {
       filtered <- filtered %>% filter(year %in% input$year)
     }
-    
     if (!is.null(input$fuel_type) && !("All" %in% input$fuel_type)) {
       filtered <- filtered %>% filter(fuel_type %in% input$fuel_type)
     }
     
-    filtered$price <- filtered$price * aed_to_usd
+    # Price range filter (USD)
+    filtered <- filtered %>%
+      filter(price_usd >= input$price_range[1], price_usd <= input$price_range[2])
     
-    return(filtered)
+    # Outlier trimming
+    if (isTRUE(input$remove_outliers) && nrow(filtered) > 20) {
+      lo <- quantile(filtered$price_usd, 0.01, na.rm = TRUE)
+      hi <- quantile(filtered$price_usd, 0.99, na.rm = TRUE)
+      filtered <- filtered %>% filter(price_usd >= lo, price_usd <= hi)
+    }
+    
+    filtered
   })
   
+  # KPI Boxes
+  output$kpi_count <- renderValueBox({
+    valueBox(
+      value = comma(nrow(filtered_data())),
+      subtitle = "Listings in Selection",
+      icon = icon("car"),
+      color = "blue"
+    )
+  })
+  
+  output$kpi_median_price <- renderValueBox({
+    valueBox(
+      value = dollar(median(filtered_data()$price_usd, na.rm = TRUE)),
+      subtitle = "Median Price (USD)",
+      icon = icon("dollar-sign"),
+      color = "blue"
+    )
+  })
+  
+  output$kpi_avg_distance <- renderValueBox({
+    df <- filtered_data()
+    dcol <- distance_col()
+    avg_dist <- mean(df[[dcol]], na.rm = TRUE)
+    
+    valueBox(
+      value = comma(round(avg_dist)),
+      subtitle = paste0("Avg Distance (", ifelse(input$distance_unit == "mi", "mi", "km"), ")"),
+      icon = icon("road"),
+      color = "blue"
+    )
+  })
+  
+  output$kpi_avg_age <- renderValueBox({
+    valueBox(
+      value = round(mean(filtered_data()$vehicle_age_years, na.rm = TRUE), 1),
+      subtitle = "Avg Vehicle Age (Years)",
+      icon = icon("calendar"),
+      color = "blue"
+    )
+  })
+  
+  # Plots
   output$price_distribution_plot <- renderPlotly({
-    plot_ly(data = filtered_data(), x = ~price, type = "histogram", marker = list(color = '#FF0000')) %>%
-      layout(title = "Price Distribution (in USD)")
+    df <- filtered_data()
+    
+    p <- plot_ly(
+      data = df,
+      x = ~price_usd,
+      type = "histogram",
+      marker = list(color = "#2563EB"),
+      hovertemplate = paste(
+        "Price (USD): %{x}<br>",
+        "Count: %{y}<extra></extra>"
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Price (USD)"),
+        yaxis = list(title = "Count"),
+        bargap = 0.05
+      )
+    
+    if (isTRUE(input$log_scale)) {
+      p <- p %>% layout(xaxis = list(type = "log", title = "Price (USD, log scale)"))
+    }
+    p
   })
   
   output$comparative_plot <- renderPlotly({
-    avg_price_brand <- filtered_data() %>% 
-      group_by(brand) %>% 
-      summarize(price_avg = mean(price, na.rm = TRUE)) %>% 
-      arrange(desc(price_avg))
+    avg_price_brand <- filtered_data() %>%
+      filter(!is.na(brand)) %>%
+      group_by(brand) %>%
+      summarize(price_avg = mean(price_usd, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(price_avg)) %>%
+      slice_head(n = 25)
     
-    plot_ly(data = avg_price_brand, x = ~brand, y = ~price_avg, type = "bar", marker = list(color = '#FF0000')) %>%
-      layout(title = "Average Price by Car Brand (in USD)",
-             xaxis = list(title = "Brand"),
-             yaxis = list(title = "Average Price (USD)"))
+    p <- plot_ly(
+      data = avg_price_brand,
+      x = ~reorder(brand, price_avg),
+      y = ~price_avg,
+      type = "bar",
+      marker = list(color = "#2563EB"),
+      hovertemplate = "Brand: %{x}<br>Avg Price: %{y:$,.0f}<extra></extra>"
+    ) %>%
+      layout(
+        xaxis = list(title = "Brand"),
+        yaxis = list(title = "Average Price (USD)")
+      )
+    
+    if (isTRUE(input$log_scale)) {
+      p <- p %>% layout(yaxis = list(type = "log", title = "Average Price (USD, log scale)"))
+    }
+    p
   })
   
+  output$top_brands_plot <- renderPlotly({
+    top_brands <- filtered_data() %>%
+      filter(!is.na(brand)) %>%
+      count(brand, sort = TRUE) %>%
+      slice_head(n = 25)
+    
+    plot_ly(
+      data = top_brands,
+      x = ~reorder(brand, n),
+      y = ~n,
+      type = "bar",
+      marker = list(color = "#2563EB"),
+      hovertemplate = "Brand: %{x}<br>Listings: %{y}<extra></extra>"
+    ) %>%
+      layout(
+        xaxis = list(title = "Brand"),
+        yaxis = list(title = "Listing Count")
+      )
+  })
+  
+  output$scatter_age_price <- renderPlotly({
+    df <- filtered_data() %>%
+      filter(!is.na(vehicle_age_years), !is.na(price_usd), vehicle_age_years >= 0)
+    
+    dcol <- distance_col()
+    dlabel <- distance_label()
+    
+    plot_ly(
+      data = df,
+      x = ~vehicle_age_years,
+      y = ~price_usd,
+      type = "scatter",
+      mode = "markers",
+      marker = list(size = 6, opacity = 0.6),
+      customdata = cbind(df$brand, df$model, df[[dcol]]),
+      hovertemplate = paste0(
+        "Age (years): %{x}<br>",
+        "Price (USD): %{y:$,.0f}<br>",
+        "Brand: %{customdata[0]}<br>",
+        "Model: %{customdata[1]}<br>",
+        dlabel, ": %{customdata[2]:,.0f}<extra></extra>"
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Vehicle Age (Years)"),
+        yaxis = list(title = "Price (USD)")
+      )
+  })
+  
+  output$ppk_plot <- renderPlotly({
+    df <- filtered_data()
+    
+    if (!is.null(input$distance_unit) && input$distance_unit == "mi") {
+      colname <- "price_per_mile"
+      label <- "USD/MI"
+    } else {
+      colname <- "price_per_km"
+      label <- "USD/KM"
+    }
+    
+    df <- df %>%
+      filter(!is.na(.data[[colname]]), is.finite(.data[[colname]]), .data[[colname]] > 0)
+    
+    # Trim extreme values for readability
+    if (nrow(df) > 50) {
+      lo <- quantile(df[[colname]], 0.01, na.rm = TRUE)
+      hi <- quantile(df[[colname]], 0.99, na.rm = TRUE)
+      df <- df %>% filter(.data[[colname]] >= lo, .data[[colname]] <= hi)
+    }
+    
+    plot_ly(
+      data = df,
+      x = df[[colname]],
+      type = "histogram",
+      marker = list(color = "#2563EB"),
+      hovertemplate = paste0(label, ": %{x:$,.4f}<br>Count: %{y}<extra></extra>")
+    ) %>%
+      layout(
+        xaxis = list(title = paste0("Price per Distance (", label, ")")),
+        yaxis = list(title = "Count"),
+        bargap = 0.05
+      )
+  })
+  
+  # Data table (filtered)
   output$data_table <- renderDT({
-    datatable(dubizzle_cars_dataset)
-  })
-  
-  output$data_summary <- renderTable({
-    data.frame(
-      Column = c("Price", "Brand", "Model", "Trim", "Kilometers", "Year", "Vehicle Age Years", 
-                 "Regional Specs", "Doors", "Body Type", "Fuel Type", "Seating Capacity", 
-                 "Transmission Type", "Engine Capacity CC", "Horsepower", "No of Cylinders", 
-                 "Exterior Color", "Interior Color", "Warranty", "Address/Country/City/Area Name/Location Name", 
-                 "Latitude/Longitude", "Seller Type"),
-      Description = c("Asking price for the vehicle.",
-                      "Vehicle manufacturer.",
-                      "Specific model of the vehicle.",
-                      "Trim level of the vehicle, indicating different features or packages.",
-                      "Mileage of the vehicle, indicating how much it has been used.",
-                      "Year of manufacture.",
-                      "The age of the vehicle calculated from the current year.",
-                      "Specifications tailored to the GCC or other regions.",
-                      "Number of doors in the vehicle.",
-                      "Type of vehicle body (e.g., SUV, hatchback).",
-                      "Type of fuel the vehicle uses (e.g., petrol, diesel).",
-                      "Number of seats in the vehicle.",
-                      "Manual or automatic transmission.",
-                      "Engine size in cubic centimeters.",
-                      "Power output of the vehicle's engine.",
-                      "Number of engine cylinders.",
-                      "Color of the vehicle's exterior.",
-                      "Color of the vehicle's interior.",
-                      "Indicates if the vehicle comes with a warranty.",
-                      "Detailed location information where the vehicle is sold.",
-                      "Geographical coordinates of the listed vehicle.",
-                      "Indicates if the seller is a dealership or a private individual.")
+    df <- filtered_data()
+    
+    if (isTRUE(input$us_view)) {
+      keep <- intersect(
+        c("brand", "model", "trim", "year", "price_usd", "miles", "kilometers",
+          "fuel_type", "transmission_type", "body_type", "horsepower", "engine_capacity_cc",
+          "exterior_color", "interior_color", "seller_type"),
+        names(df)
+      )
+      
+      df <- df %>%
+        select(all_of(keep)) %>%
+        rename(
+          `Price (USD)` = price_usd,
+          `Miles` = miles,
+          `Kilometers` = kilometers,
+          `Fuel Type` = fuel_type,
+          `Transmission` = transmission_type,
+          `Body Type` = body_type,
+          `Engine (cc)` = engine_capacity_cc,
+          `Seller Type` = seller_type,
+          `Exterior` = exterior_color,
+          `Interior` = interior_color
+        )
+      
+      if ("Price (USD)" %in% names(df)) df$`Price (USD)` <- round(df$`Price (USD)`, 0)
+      if ("Miles" %in% names(df)) df$Miles <- round(df$Miles, 0)
+      if ("Kilometers" %in% names(df)) df$Kilometers <- round(df$Kilometers, 0)
+    }
+    
+    datatable(
+      df,
+      options = list(pageLength = 10, scrollX = TRUE, autoWidth = TRUE),
+      rownames = FALSE
     )
   })
+  
+  # Download filtered CSV
+  output$download_filtered <- downloadHandler(
+    filename = function() paste0("dubizzle_cars_filtered_", Sys.Date(), ".csv"),
+    content = function(file) write.csv(filtered_data(), file, row.names = FALSE)
+  )
+  
+  # About table
+  output$data_summary <- renderTable({
+    data.frame(
+      Column = c(
+        "price_usd", "brand", "model", "kilometers", "miles", "year",
+        "vehicle_age_years", "fuel_type", "price_per_km", "price_per_mile"
+      ),
+      Description = c(
+        "Asking price converted from AED to USD.",
+        "Vehicle manufacturer/brand.",
+        "Vehicle model.",
+        "Mileage (kilometers).",
+        "Mileage (miles).",
+        "Year of manufacture.",
+        "Derived: current year minus vehicle year.",
+        "Fuel type (e.g., petrol, diesel).",
+        "Derived: price_usd divided by kilometers.",
+        "Derived: price_usd divided by miles."
+      )
+    )
+  }, striped = TRUE, bordered = TRUE, spacing = "s")
 }
 
 shinyApp(ui, server)
-
-
-
